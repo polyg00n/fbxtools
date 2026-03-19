@@ -29,7 +29,11 @@ These arguments are shared between `process` and `prepUE` via a parent parser:
 
 - **`-i, --input`**: Source folder for raw FBX files (default: `input`).
 - **`-o, --output`**: Target folder for processed assets (default: `output`).
-- **`--audit`**: Generates a technical report on mesh counts and `FbxSkin` binding status.
+- **`--audit`**: Generates a comprehensive technical report including:
+    - **Mesh & Skinning Count**: Identifies geometry and skeletal bindings via `FbxSkin`.
+    - **Anim Curve Accounting**: Reports raw `FbxAnimCurve` object counts.
+    - **Point Cache Detection**: Identifies `FbxCache` (vertex cache) objects that bloat file size.
+    - **Scene Root Overview**: Lists all Top-Level nodes in the scene hierarchy.
 - **`--inject-proxy`**: Injects a 1x1x1 cube bound to the first joint (e.g., Hips). Required for establishing a `USkeleton` in Unreal when only animation data is present.
 - **`--add-root`**: Force injection of a `root` joint at (0,0,0) as a parent to the `Hips`.
 - **`--rescale [float]`**: Multiply scene scale (default: 1.0).
@@ -53,8 +57,8 @@ If you have a folder of animations without meshes, use this specialized command 
 2.  **Unreal Result**: You will get a `_Skel.fbx` file. Import this first to create your `Skeletal Mesh` and `Skeleton` assets.
 3.  **Animation Import**: Target all subsequent `_Split.fbx` files to the skeleton created in step 2.
 
-### Mesh Audit Verification
-To verify if your files are properly bound before a production run:
+### Integrity & Performance Audit
+To verify if your files are properly bound or containing bloated point caches:
 ```bash
 python fbxtools.py process --audit
 ```

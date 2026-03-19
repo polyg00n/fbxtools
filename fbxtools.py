@@ -152,14 +152,24 @@ def process_fbx_files(args):
                 take_count = scene.GetSrcObjectCount(fbx.FbxCriteria.ObjectType(fbx.FbxAnimStack.ClassId))
                 take_names = [scene.GetSrcObject(fbx.FbxCriteria.ObjectType(fbx.FbxAnimStack.ClassId), i).GetName() for i in range(take_count)]
                 print(f"--- Processing: {filename} ---\n  > FBX Version: {file_version_str}\n  > Takes Found: {take_count}")
+                
+                # Mesh/Skin/Anim/Cache Audit
                 if args.audit:
                     mesh_count = scene.GetSrcObjectCount(fbx.FbxCriteria.ObjectType(fbx.FbxMesh.ClassId))
-                    print(f"  > Audit: {mesh_count} Meshes found.")
+                    skin_count = scene.GetSrcObjectCount(fbx.FbxCriteria.ObjectType(fbx.FbxSkin.ClassId))
+                    curve_count = scene.GetSrcObjectCount(fbx.FbxCriteria.ObjectType(fbx.FbxAnimCurve.ClassId))
+                    cache_count = scene.GetSrcObjectCount(fbx.FbxCriteria.ObjectType(fbx.FbxCache.ClassId))
+                    print(f"  > Audit: {mesh_count} Meshes, {skin_count} Skins, {curve_count} AnimCurves, {cache_count} Caches.")
+                    # Top-Level Report
+                    root_node = scene.GetRootNode()
+                    top_nodes = [root_node.GetChild(i).GetName() for i in range(root_node.GetChildCount())]
+                    print(f"    - Top-Level Nodes: {top_nodes}")
                     for m_idx in range(mesh_count):
                         mesh = scene.GetSrcObject(fbx.FbxCriteria.ObjectType(fbx.FbxMesh.ClassId), m_idx)
                         m_node = mesh.GetNode(); m_node_name = m_node.GetName() if m_node else "Unparented"
                         has_skin = any(mesh.GetDeformer(d).IsA(fbx.FbxSkin.ClassId) for d in range(mesh.GetDeformerCount()))
                         print(f"    - Mesh: '{mesh.GetName()}' (Node: '{m_node_name}') [Bound: {has_skin}]")
+
                 if take_count == 0 and not is_prep_ue and not args.inject_proxy:
                     scene.Destroy(); continue
                 if rescale != 1.0:
