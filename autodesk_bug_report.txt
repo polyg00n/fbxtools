@@ -1,0 +1,185 @@
+FBX Python SDK Bug Report
+FbxImporter::Import() with pSubsetIndex > 0 Hangs Indefinitely
+Product: Autodesk FBX SDK (Python Bindings) | Severity: High | Category: API Correctness / Hang
+
+================================================================================
+1. ENVIRONMENT
+================================================================================
+
+SDK         : Autodesk FBX SDK Python Bindings (fbx on PyPI)
+Platform    : Windows 10/11 x64
+Python      : 3.x (tested on 3.10 and 3.11)
+File type   : Multi-take FBX (binary), mocap data
+Use case    : Batch animation clip extraction for Unreal Engine 5
+
+
+================================================================================
+2. SUMMARY
+================================================================================
+
+Calling FbxImporter::Import(scene, i) with a subset index of 0 (the first take)
+completes successfully and returns. Calling the same method with any index greater
+than 0 hangs indefinitely -- the call never returns and the process must be killed.
+This makes it impossible to use the pSubsetIndex overload to perform single-take
+extraction from multi-take FBX files via the Python bindings.
+
+
+================================================================================
+3. STEPS TO REPRODUCE
+================================================================================
+
+3.1 Minimal Reproduction
+-------------------------
+
+The following script reproduces the hang. It first enumerates all takes in a
+multi-take FBX file using a standard full import, then attempts to re-import each
+take individually by index:
+
+    import fbx
+    import FbxCommon
+
+    FILE_PATH = 'multi_take.fbx'   # any FBX with 2+ animation takes
+
+    # Step 1: enumerate take names with a full import
+    mgr = fbx.FbxManager.Create()
+    ios = fbx.FbxIOSettings.Create(mgr, fbx.IOSROOT)
+    mgr.SetIOSettings(ios)
+    scene = fbx.FbxScene.Create(mgr, 'scan')
+    imp = fbx.FbxImporter.Create(mgr, '')
+    imp.Initialize(FILE_PATH, -1, ios)
+    imp.Import(scene)   # full import - works fine
+    imp.Destroy()
+    take_count = scene.GetSrcObjectCount(
+        fbx.FbxCriteria.ObjectType(fbx.FbxAnimStack.ClassId))
+    take_names = [scene.GetSrcObject(
+        fbx.FbxCriteria.ObjectType(fbx.FbxAnimStack.ClassId), i).GetName()
+        for i in range(take_count)]
+    scene.Destroy()
+    mgr.Destroy()
+
+    # Step 2: import each take individually by subset index
+    for i, name in enumerate(take_names):
+        print(f'Importing take {i}: {name}')
+        take_mgr = fbx.FbxManager.Create()
+        take_ios = fbx.FbxIOSettings.Create(take_mgr, fbx.IOSROOT)
+        take_mgr.SetIOSettings(take_ios)
+        sc = fbx.FbxScene.Create(take_mgr, 'take_scene')
+        imp2 = fbx.FbxImporter.Create(take_mgr, '')
+        imp2.Initialize(FILE_PATH, -1, take_ios)
+        print(f'  > Initialized. Calling Import(sc, {i})...')
+        imp2.Import(sc, i)   # <-- HANGS here for i > 0
+        print(f'  > Import returned.')   # never reached for i > 0
+        imp2.Destroy()
+        take_mgr.Destroy()
+
+
+3.2 Observed Output
+--------------------
+
+    Importing take 0: Take 001
+      > Initialized. Calling Import(sc, 0)...
+      > Import returned.          <- completes normally
+    Importing take 1: 01_01
+      > Initialized. Calling Import(sc, 1)...
+                                  <- hangs here, never returns
+
+
+3.3 Expected Output
+--------------------
+
+Each call to Import(sc, i) should return after loading only the skeleton, nodes,
+and animation curves belonging to take i -- consistent with the documented behaviour
+of the pSubsetIndex parameter in the C++ SDK.
+
+
+================================================================================
+4. CONTEXT AND WORKAROUNDS ATTEMPTED
+================================================================================
+
+The goal is to split a single multi-take FBX file into one FBX per animation clip,
+correctly imported by Unreal Engine 5's Interchange pipeline. The following
+approaches were attempted in order before reaching the pSubsetIndex hang:
+
+
+Attempt 1 -- Post-import AnimStack destruction
+-----------------------------------------------
+After a full import, iterating all FbxAnimStack objects and calling Destroy() on
+the stacks not needed, then exporting the scene. Result: all takes still present
+in every output file at identical file sizes. The FBX SDK does not honour stack
+destruction for scene-owned objects -- the exporter walks the document's internal
+object registry, which still references all stacks regardless of Destroy() calls.
+
+
+Attempt 2 -- DisconnectSrcObject before Destroy
+------------------------------------------------
+Added scene.DisconnectSrcObject(stack) before stack.Destroy(True) to sever the
+document registry link. Result: no change. File sizes remained identical across
+all output clips. DisconnectSrcObject does not remove the object from the scene's
+internal serialisation table.
+
+
+Attempt 3 -- Exporter IO settings flags
+-----------------------------------------
+Configured the export FbxIOSettings to restrict output, including:
+  - EXP_FBX_ANIMATION = True
+  - Export|IncludeGrp|Animation|ExtraGrp|bakeAnimation = False
+  - EXP_FBX_SHAPE, EXP_FBX_MATERIAL, EXP_FBX_TEXTURE, EXP_FBX_EMBEDDED = False
+
+Result: no change in output file sizes. The Python binding does not appear to relay
+these IO property strings to the underlying C++ layer in a way that affects
+serialisation.
+
+
+Attempt 4 -- SetCurrentAnimationStack + GlobalSettings time span sync
+-----------------------------------------------------------------------
+Called scene.SetCurrentAnimationStack(target_stack) and synchronised the scene's
+GlobalSettings timeline span to the take's LocalTimeSpan before export. This
+resolved a secondary issue where Unreal Engine reported "no data to import" (caused
+by a mismatched time range in GlobalSettings), but did not resolve the
+multiple-takes-per-file problem since all stacks remained in the scene.
+
+
+Attempt 5 -- Import(scene, i) subset index (current blocker)
+-------------------------------------------------------------
+Attempted to use the pSubsetIndex overload of FbxImporter::Import, which in the
+C++ SDK loads only the skeleton/nodes plus animation curves for take i. The call
+succeeds without TypeError for i = 0 and returns normally. For any i > 0 the call
+blocks indefinitely with no error, no exception, and no return.
+
+
+================================================================================
+5. ADDITIONAL OBSERVATIONS
+================================================================================
+
+- The hang is consistent -- it has never returned after several minutes of waiting
+  across multiple test runs.
+- The hang occurs regardless of take index value (1, 2, 3 all hang; only 0 succeeds).
+- Using a fresh FbxManager, FbxIOSettings, FbxScene, and FbxImporter for every
+  call rules out state contamination from a previous import.
+- The same FBX file imports cleanly in full (i.e. without a subset index) on every
+  call.
+- The file is a standard binary FBX from a commercial mocap vendor and opens
+  correctly in MotionBuilder and the FBX Review tool.
+- No deadlock or error is reported -- the process simply never wakes up after the
+  Import() call.
+
+
+================================================================================
+6. REQUEST
+================================================================================
+
+Please investigate whether the pSubsetIndex overload of FbxImporter::Import is
+correctly exposed and implemented in the Python bindings. Specifically:
+
+  1. Is Import(scene, pSubsetIndex) intended to be a supported call path in the
+     Python bindings?
+
+  2. Is there a known alternative Python API to achieve single-take import from
+     a multi-take file?
+
+  3. If the subset import path is not supported, is there a reliable way to strip
+     unwanted FbxAnimStack objects from a scene prior to export such that the
+     exporter writes only one take?
+
+A working single-take extraction path in Python is necessary to avoid rewriting
+this tooling in C++.
